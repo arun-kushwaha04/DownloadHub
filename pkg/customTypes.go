@@ -13,7 +13,7 @@ func (t *DownloadType) GetMaxThreads() uint8 {
 	return t.maxThreadCount
 }
 
-type DownloadInfo struct {
+type ResourceInfo struct {
 	FileSize   int64
 	FileName   string
 	Url        *url.URL

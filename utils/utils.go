@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -15,7 +16,7 @@ import (
 	pkg "github.com/arun-kushwaha04/DownloadHub/pkg"
 )
 
-func GetClient(method string, url *url.URL, body *io.Reader) (*http.Client, *http.Request, error) {
+func GetClient(method string, url *url.URL, body *io.Reader, header *map[string][]string) (*http.Client, *http.Request, error) {
 	client := &http.Client{}
 
 	requestUri := url.String()
@@ -26,22 +27,24 @@ func GetClient(method string, url *url.URL, body *io.Reader) (*http.Client, *htt
 	}
 
 	// adding headers
+	req.Header = *header
 	req.Header.Add("Host", url.Hostname())
 	req.Header.Add("User-Agent", config.DEFAULT_USER_AGENT)
 
 	return client, req, nil
 }
 
-func getMetaData(urlString string) (*pkg.DownloadInfo, error) {
+func GetMetaData(resourceString *string) (*pkg.ResourceInfo, error) {
 
-	parsedUrl, err := url.Parse(urlString)
+	parsedUrl, err := url.Parse(*resourceString)
 	if err != nil {
-		return nil, err
+		return nil, URLParseError
 	}
 
 	fileName := path.Base(parsedUrl.Path)
 
-	client, req, err := GetClient("HEAD", parsedUrl, nil)
+	var headers map[string][]string
+	client, req, err := GetClient("HEAD", parsedUrl, nil, &headers)
 	if err != nil {
 		return nil, err
 	}
@@ -67,10 +70,10 @@ func getMetaData(urlString string) (*pkg.DownloadInfo, error) {
 	if acceptRanges == "" {
 		// not resumable download
 
-		return &pkg.DownloadInfo{FileSize: fileSize, FileName: fileName, Resumeable: false, Url: parsedUrl}, nil
+		return &pkg.ResourceInfo{FileSize: fileSize, FileName: fileName, Resumeable: false, Url: parsedUrl}, nil
 	}
 
-	return &pkg.DownloadInfo{FileSize: fileSize, FileName: fileName, Resumeable: true, Url: parsedUrl}, nil
+	return &pkg.ResourceInfo{FileSize: fileSize, FileName: fileName, Resumeable: true, Url: parsedUrl}, nil
 }
 
 func CreateFile(parentDir string, fileName string, fileSize int64) (string, error) {
@@ -98,7 +101,17 @@ func CreateFile(parentDir string, fileName string, fileSize int64) (string, erro
 	return fullPath, nil
 }
 
-func renameFile(src string, newFileName string) error {
+func GetByteRangeHeader(start *int64, end *int64) *map[string][]string {
+
+	values := []string{ fmt.Sprintf("bytes=%d-%d",start,end)}
+	var header map[string][]string
+
+	header["Range"] = values
+
+	return &header
+}
+
+func RenameFile(src string, newFileName string) error {
 	_, err := os.Stat(src)
 	if os.IsNotExist(err) {
 		return FileNotFound
@@ -106,7 +119,7 @@ func renameFile(src string, newFileName string) error {
 
 	if err == nil {
 		dirPath := filepath.Dir(src)
-		dest := path.Join(dirPath, newFileName)
+		dest := filepath.Join(dirPath, newFileName)
 
 		if err := os.Rename(src, dest); err != nil {
 			return FileRenameError
@@ -134,4 +147,36 @@ func GetStats(startTime *time.Time, writeDuration *time.Time, bytesRead *int64, 
 	runtime.ReadMemStats(&m)
 
 	return &pkg.DownloadStats{DownloadSpeed: &downloadSpeed, DiskWriteSpeed: &diskWriteSpeed, EstimateRemainingTime: &estimatedRemainingTime, ElapsedTime: &elapsed, Progress: &progress, MemoryUsed: &m.Alloc}
+}
+
+func GetDownloadFolder(ext string) string {
+
+	for _, v := range config.VideoExtensions {
+		if v == ext {
+			return filepath.Join(config.DOWNLOAD_DIRECTORY, config.VIDEO_SUB_FOLDER)
+		}
+	}
+	for _, v := range config.MusicExtensions {
+		if v == ext {
+			return filepath.Join(config.DOWNLOAD_DIRECTORY, config.MUSIC_SUB_FOLDER)
+		}
+	}
+	for _, v := range config.ProgramExtensions {
+		if v == ext {
+			return filepath.Join(config.DOWNLOAD_DIRECTORY, config.PROGRAMS_SUB_FOLDER)
+		}
+	}
+	for _, v := range config.CompressedExtensions {
+		if v == ext {
+			return filepath.Join(config.DOWNLOAD_DIRECTORY, config.COMPRESSED_SUB_FOLDER)
+		}
+	}
+	for _, v := range config.DocumentExtensions {
+		if v == ext {
+			return filepath.Join(config.DOWNLOAD_DIRECTORY, config.DOCUMENT_SUB_FOLDER)
+		}
+	}
+
+	return filepath.Join(config.DOWNLOAD_DIRECTORY, config.GENERAL_SUB_FOLDER)
+
 }

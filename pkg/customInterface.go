@@ -1,5 +1,5 @@
 package pkg
 
 type DownloadSpeed interface {
-	getMaxThreads() uint8
+	GetMaxThreads() uint8
 }
