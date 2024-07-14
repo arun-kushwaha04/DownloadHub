@@ -15,19 +15,20 @@ import (
 )
 
 type downloaderThread struct {
-	threadId          uuid.UUID
+	threadId          uint8
 	startByte         int64
 	endByte           int64
+	fullPath          string
 	startTime         time.Time
 	runTime           time.Duration
-	fullPath          string
+	writeTime         *time.Duration
 	resourceInfo      *pkg.ResourceInfo
 	bytesDownloaded   *int64
 	bytesWritten      *int64
 	downloadWriteLock *sync.RWMutex
 	diskWriteLock     *sync.RWMutex
 	waitGroup         *sync.WaitGroup
-	messageChan       chan string
+	messageChan       chan rune
 	errorChan         chan error
 }
 
@@ -40,10 +41,13 @@ type Downloader struct {
 	fullPath          string
 	startTime         time.Time
 	runTime           time.Duration
+	writeTime         time.Duration
 	bytesDownloaded   *int64
 	bytesWritten      *int64
 	downloadWriteLock *sync.RWMutex
 	diskWriteLock     *sync.RWMutex
+	waitGroup         *sync.WaitGroup
+	errorChan         chan error
 }
 
 func (thread *downloaderThread) StartThread() error {
@@ -53,25 +57,41 @@ func (thread *downloaderThread) StartThread() error {
 	file, err := os.OpenFile(thread.fullPath, os.O_RDWR, 0644)
 	defer file.Close()
 	if err != nil {
+		thread.errorChan <- utils.FileReadPermissionError
 		return utils.FileReadPermissionError
 	}
 
 	client, req, err := utils.GetClient("GET", thread.resourceInfo.Url, nil, utils.GetByteRangeHeader(&thread.startByte, &thread.endByte))
 
 	if err != nil {
+		thread.errorChan <- err
 		return err
 	}
 
 	res, err := client.Do(req)
 	if err != nil {
+		thread.errorChan <- utils.HttpClientIntalizationError
 		return utils.HttpClientIntalizationError
 	}
 
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusPartialContent && res.StatusCode != http.StatusOK {
+		thread.errorChan <- utils.ServerError
 		return utils.ServerError
 	}
+
+	// running another goroutine to monitor closing of goroutine (stop download)
+	go func() {
+		// code stuck here until channel closes
+		for range thread.messageChan {
+			break
+		}
+		file.Close()
+		res.Body.Close()
+		thread.waitGroup.Done()
+	}()
+	defer close(thread.messageChan)
 
 	fileBuffer := make([]byte, configs.BUFF_SIZE)
 	fileBufferIdx := 0
@@ -98,6 +118,7 @@ func (thread *downloaderThread) StartThread() error {
 		}
 
 		if err != nil {
+			thread.errorChan <- utils.UnexpectedServerResponse
 			return utils.UnexpectedServerResponse
 		}
 
@@ -113,6 +134,7 @@ func (thread *downloaderThread) StartThread() error {
 			// write to file from buff[0:idx-1]
 			wt, err := file.Write(fileBuffer[:fileBufferIdx])
 			if err != nil {
+				thread.errorChan <- utils.FileWritePermissionError
 				return utils.FileWritePermissionError
 			}
 			fileBufferIdx = 0
@@ -123,15 +145,94 @@ func (thread *downloaderThread) StartThread() error {
 
 	}
 	thread.runTime = time.Since(thread.startTime)
+	thread.errorChan <- nil
 	return nil
 }
 
 func (downloader *Downloader) StartDownload() error {
+	defer downloader.clearThreads()
 
+	downloader.startTime = time.Now()
+
+	// starting the threads
+	for _, thread := range *downloader.threads {
+		downloader.waitGroup.Add(1)
+		go thread.StartThread()
+	}
+
+	// monitoring downloader usage
+	ticker := time.NewTicker(5 * time.Second)
+	quit := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				utils.GetStats(&downloader.startTime, &downloader.writeTime, downloader.bytesDownloaded, downloader.bytesWritten, &downloader.resourceInfo.FileSize, downloader.downloadStats)
+			case <-quit:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	// closing all channels
+	go func() {
+		downloader.waitGroup.Wait()
+		close(downloader.errorChan)
+		close(quit)
+	}()
+
+	for err := range downloader.errorChan {
+		if err != nil {
+			return utils.DownloadFailed
+		}
+	}
+
+	downloader.waitGroup.Wait()
+
+	// merge downloaded files
+	if err := downloader.MergeDownload(); err != nil {
+		return utils.FileRebiuldError
+	}
+
+	if err := utils.RenameFile(downloader.fullPath, downloader.resourceInfo.FileName); err != nil {
+		return utils.DownloadFailedRenameError
+	}
+
+	downloader.runTime = time.Since(downloader.startTime)
 	return nil
 }
 
-func CreateDownloader(resourceUrl string, downloadPrt pkg.DownloadSpeed) (*Downloader, error) {
+func (downloader *Downloader) MergeDownload() error {
+	for _, thread := range *downloader.threads {
+		if err := utils.MergeSegment(thread.startByte, thread.fullPath, downloader.fullPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (downloader *Downloader) clearThreads() {
+	for _, thread := range *downloader.threads {
+		*thread = downloaderThread{}
+	}
+	*downloader = Downloader{}
+}
+
+func (downloader *Downloader) PauseDownload() {
+	for i := range *downloader.threads {
+		close((*downloader.threads)[i].messageChan)
+	}
+	downloader.clearThreads()
+}
+
+func CreateDownloader(resourceUrl string, downloadPrt pkg.DownloadSpeed, ranges *map[uint8][2]int64) (*Downloader, error) {
+
+	resumedDownload := false
+	if ranges != nil {
+		resumedDownload = true
+	}
+
 	resourceInfo, err := utils.GetMetaData(&resourceUrl)
 	if err != nil {
 		return nil, err
@@ -145,34 +246,51 @@ func CreateDownloader(resourceUrl string, downloadPrt pkg.DownloadSpeed) (*Downl
 		return nil, err
 	}
 
-	threads := make([]*downloaderThread, 0, downloadPrt.GetMaxThreads())
-
 	var downloadWriteLock, diskWriteLock sync.RWMutex
 	var wg sync.WaitGroup
 
 	// channels
-	messageChan := make(chan string)
 	errorChan := make(chan error)
 
-	bytesPerThread := (*resourceInfo).FileSize / int64(downloadPrt.GetMaxThreads())
 	var bytesDownloaded, bytesWritten *int64
+	var writeDuration time.Duration = 0
 
+	threads := make([]*downloaderThread, 0, downloadPrt.GetMaxThreads())
+
+	bytesPerThread := (resourceInfo).FileSize / int64(downloadPrt.GetMaxThreads())
 	// creating threads
 	var i uint8
 	for i = 0; i < downloadPrt.GetMaxThreads(); i++ {
-		threadId := uuid.New()
-		fullPath, err := utils.CreateFile(configs.TEMP_DIRECTORY, threadId.String(), 0)
+		fullPath, err := utils.CreateFile(configs.TEMP_DIRECTORY, utils.GetSegmentName((resourceInfo).FileName, int(i)), 0)
 		if err != nil {
 			return nil, err
 		}
+
+		startByte := int64(i) * bytesPerThread
+		endByte := int64(i+1)*bytesPerThread - 1
+
+		if resumedDownload {
+			value, ok := (*ranges)[i]
+			if ok {
+				startByte = value[0]
+				endByte = value[1]
+			} else {
+				continue
+			}
+		}
+
+		//channel for stopping goroutine
+		messageChan := make(chan rune)
+
 		thread := &downloaderThread{
-			threadId:          threadId,
-			startByte:         int64(i) * bytesPerThread,
-			endByte:           int64(i+1)*bytesPerThread - 1,
+			threadId:          i,
+			startByte:         startByte,
+			endByte:           endByte,
 			resourceInfo:      resourceInfo,
+			fullPath:          fullPath,
 			startTime:         time.Now(),
 			runTime:           time.Since(time.Now()),
-			fullPath:          fullPath,
+			writeTime:         &writeDuration,
 			bytesDownloaded:   bytesDownloaded,
 			bytesWritten:      bytesWritten,
 			downloadWriteLock: &downloadWriteLock,
@@ -192,10 +310,42 @@ func CreateDownloader(resourceUrl string, downloadPrt pkg.DownloadSpeed) (*Downl
 		threads:           &threads,
 		startTime:         time.Now(),
 		runTime:           time.Since(time.Now()),
+		writeTime:         writeDuration,
 		fullPath:          fullPath,
 		bytesDownloaded:   bytesDownloaded,
 		bytesWritten:      bytesWritten,
 		downloadWriteLock: &downloadWriteLock,
 		diskWriteLock:     &diskWriteLock,
+		waitGroup:         &wg,
+		errorChan:         errorChan,
 	}, nil
+}
+
+func (downloader *Downloader) ResumeDownload(resourceUrl string, downloadPrt pkg.DownloadSpeed) (*Downloader, error) {
+	resourceInfo, err := utils.GetMetaData(&resourceUrl)
+	if err != nil {
+		return nil, err
+	}
+
+	ranges := make(map[uint8][2]int64)
+
+	bytesPerThread := (resourceInfo).FileSize / int64(downloadPrt.GetMaxThreads())
+
+	var i uint8
+	for i = 0; i < downloadPrt.GetMaxThreads(); i++ {
+		downloaded, err := utils.FileExits(configs.TEMP_DIRECTORY, utils.GetSegmentName((resourceInfo).FileName, int(i)), true)
+		if err != nil {
+			return nil, err
+		}
+
+		startByte := int64(i)*bytesPerThread + downloaded
+		endByte := int64(i+1) * bytesPerThread
+
+		if startByte != endByte {
+			ranges[i] = [2]int64{startByte, endByte}
+		}
+
+	}
+
+	return CreateDownloader(resourceUrl, downloadPrt, &ranges)
 }

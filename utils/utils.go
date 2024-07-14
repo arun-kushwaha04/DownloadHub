@@ -77,13 +77,24 @@ func GetMetaData(resourceString *string) (*pkg.ResourceInfo, error) {
 }
 
 func CreateFile(parentDir string, fileName string, fileSize int64) (string, error) {
+
+	fullPath := filepath.Join(parentDir, fileName)
+
+	fs, err := FileExits(parentDir, fileName, false)
+	if err != nil {
+		return "", err
+	}
+
+	if fs > 1{
+		return fullPath, nil
+	}
+
 	fileName += config.TEMP_EXT
 
 	if err := os.MkdirAll(parentDir, os.ModePerm); err != nil {
 		return "", DirCreatePermissionError
 	}
 
-	fullPath := filepath.Join(parentDir, fileName)
 
 	file, err := os.Create(fullPath)
 	if err != nil {
@@ -103,7 +114,7 @@ func CreateFile(parentDir string, fileName string, fileSize int64) (string, erro
 
 func GetByteRangeHeader(start *int64, end *int64) *map[string][]string {
 
-	values := []string{ fmt.Sprintf("bytes=%d-%d",start,end)}
+	values := []string{fmt.Sprintf("bytes=%d-%d", start, end)}
 	var header map[string][]string
 
 	header["Range"] = values
@@ -131,22 +142,71 @@ func RenameFile(src string, newFileName string) error {
 	return err
 }
 
-func GetStats(startTime *time.Time, writeDuration *time.Time, bytesRead *int64, bytesWrote *int64, fileSize *int64) *pkg.DownloadStats {
+func MergeSegment(offset int64, segmentPath string, filePath string) error {
 
-	elapsed := time.Since(*startTime)
+	srcFile, err := os.Open(segmentPath)
+	if err != nil {
+		return MissingSegmentFile
+	}
 
-	downloadSpeed := float64(*bytesRead) / elapsed.Seconds()
+	dstFile, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return MissingMainFile
+	}
+	defer dstFile.Close()
 
-	diskWriteSpeed := float64(*bytesWrote) / float64((*writeDuration).Second())
+	if _, err := dstFile.Seek(offset, io.SeekStart); err != nil {
+		return FileReadPermissionError
+	}
 
-	estimatedRemainingTime := time.Duration(float64(*fileSize-*bytesRead)/downloadSpeed) * time.Second
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return FileWritePermissionError
+	}
 
-	progress := float32(float64(*bytesRead) * (100 / float64(*fileSize)))
+	return nil
+}
+
+func GetSegmentName(fileName string, i int) string {
+	return fileName + strconv.Itoa(i)
+}
+
+func FileExits(parentDir string, fileName string, ifNotCreate bool) (int64, error) {
+	fileInfo, err := os.Stat(path.Join(parentDir, fileName))
+	if err == nil {
+		return fileInfo.Size(), nil
+	}
+	if os.IsNotExist(err) {
+		if ifNotCreate{
+			_, err := CreateFile(parentDir, fileName, 0)
+			if err != nil {
+				return 1, FileCreatePermissionError
+			}
+			return 1, nil
+		}else {
+			return 1,nil
+		}
+	}
+	return 0, FileReadPermissionError
+}
+
+func GetStats(startTime *time.Time, writeDuration *time.Duration, bytesRead *int64, bytesWrote *int64, fileSize *int64, stat *pkg.DownloadStats) {
+
+	*stat.ElapsedTime = time.Since(*startTime)
+
+	*stat.DownloadSpeed = float64(*bytesRead) / (*stat.ElapsedTime).Seconds()
+
+	*stat.DiskWriteSpeed = float64(*bytesWrote) / float64(*writeDuration)
+
+	*stat.EstimateRemainingTime = time.Duration(float64(*fileSize-*bytesRead)/(*stat.DownloadSpeed)) * time.Second
+
+	*stat.Progress = float32(float64(*bytesRead) * (100 / float64(*fileSize)))
 
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
-	return &pkg.DownloadStats{DownloadSpeed: &downloadSpeed, DiskWriteSpeed: &diskWriteSpeed, EstimateRemainingTime: &estimatedRemainingTime, ElapsedTime: &elapsed, Progress: &progress, MemoryUsed: &m.Alloc}
+	*stat.MemoryUsed = m.Alloc
+
+	// return &pkg.DownloadStats{DownloadSpeed: &downloadSpeed, DiskWriteSpeed: &diskWriteSpeed, EstimateRemainingTime: &estimatedRemainingTime, ElapsedTime: &elapsed, Progress: &progress, MemoryUsed: &m.Alloc}
 }
 
 func GetDownloadFolder(ext string) string {
