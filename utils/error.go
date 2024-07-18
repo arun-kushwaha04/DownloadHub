@@ -1,10 +1,33 @@
 package utils
 
-import "errors"
+import (
+	"errors"
+)
+
+type ThreadError struct {
+	threadId uint8
+	err      error
+}
+
+func NewThreadError(threadId uint8, err error) ThreadError {
+	return ThreadError{
+		threadId: threadId,
+		err:      err,
+	}
+}
+
+func (te ThreadError) Error() string {
+	return te.err.Error()
+}
+
+func (te ThreadError) GetThreadId() uint8 {
+	return te.threadId
+}
 
 var HttpClientIntalizationError = errors.New("Unable to create http client")
 var HttpRequestError = errors.New("Unable to make http request")
 var ServerError = errors.New("Server responsed with non 200 status")
+var InvalidRangeRequested = errors.New("Invalid range headers")
 var UnexpectedServerResponse = errors.New("Unexpected response body for resource")
 var URLParseError = errors.New("Invalid download url")
 var InvalidResourceSize = errors.New("Invalid resource size returned from http server")

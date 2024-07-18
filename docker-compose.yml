@@ -1,0 +1,11 @@
+services:
+  downloadhub:
+    container_name: downloadHub
+    build: .
+    volumes:
+      - /media/runa/NAS/Downloads:/downloads
+    deploy:
+      resources:
+        limits:
+          memory: 500M
+    memswap_limit: 500M

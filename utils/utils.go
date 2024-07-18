@@ -8,42 +8,42 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strconv"
-	"time"
 
 	config "github.com/arun-kushwaha04/DownloadHub/configs"
 	pkg "github.com/arun-kushwaha04/DownloadHub/pkg"
 )
 
-func GetClient(method string, url *url.URL, body *io.Reader, header *map[string][]string) (*http.Client, *http.Request, error) {
+func GetClient(method string, url *url.URL, body io.Reader, header *map[string]string) (*http.Client, *http.Request, error) {
 	client := &http.Client{}
 
 	requestUri := url.String()
-	req, err := http.NewRequest(method, requestUri, *body)
+	req, err := http.NewRequest(method, requestUri, body)
 
 	if err != nil {
 		return nil, nil, HttpRequestError
 	}
 
 	// adding headers
-	req.Header = *header
+	for key, value := range *header {
+		req.Header.Add(key, value)
+	}
 	req.Header.Add("Host", url.Hostname())
 	req.Header.Add("User-Agent", config.DEFAULT_USER_AGENT)
 
 	return client, req, nil
 }
 
-func GetMetaData(resourceString *string) (*pkg.ResourceInfo, error) {
+func GetMetaData(resourceString string) (*pkg.ResourceInfo, error) {
 
-	parsedUrl, err := url.Parse(*resourceString)
+	parsedUrl, err := url.Parse(resourceString)
 	if err != nil {
 		return nil, URLParseError
 	}
 
 	fileName := path.Base(parsedUrl.Path)
 
-	var headers map[string][]string
+	var headers map[string]string
 	client, req, err := GetClient("HEAD", parsedUrl, nil, &headers)
 	if err != nil {
 		return nil, err
@@ -51,6 +51,7 @@ func GetMetaData(resourceString *string) (*pkg.ResourceInfo, error) {
 
 	res, err := client.Do(req)
 	if err != nil {
+		fmt.Println(err)
 		return nil, HttpClientIntalizationError
 	}
 
@@ -85,7 +86,7 @@ func CreateFile(parentDir string, fileName string, fileSize int64) (string, erro
 		return "", err
 	}
 
-	if fs > 1{
+	if fs > 1 {
 		return fullPath, nil
 	}
 
@@ -94,7 +95,6 @@ func CreateFile(parentDir string, fileName string, fileSize int64) (string, erro
 	if err := os.MkdirAll(parentDir, os.ModePerm); err != nil {
 		return "", DirCreatePermissionError
 	}
-
 
 	file, err := os.Create(fullPath)
 	if err != nil {
@@ -112,10 +112,10 @@ func CreateFile(parentDir string, fileName string, fileSize int64) (string, erro
 	return fullPath, nil
 }
 
-func GetByteRangeHeader(start *int64, end *int64) *map[string][]string {
+func GetByteRangeHeader(start *int64, end *int64) *map[string]string {
 
-	values := []string{fmt.Sprintf("bytes=%d-%d", start, end)}
-	var header map[string][]string
+	values := fmt.Sprintf("bytes=%d-%d", *start, *end)
+	header := make(map[string]string)
 
 	header["Range"] = values
 
@@ -123,6 +123,7 @@ func GetByteRangeHeader(start *int64, end *int64) *map[string][]string {
 }
 
 func RenameFile(src string, newFileName string) error {
+	fmt.Println("Renaming download")
 	_, err := os.Stat(src)
 	if os.IsNotExist(err) {
 		return FileNotFound
@@ -167,7 +168,7 @@ func MergeSegment(offset int64, segmentPath string, filePath string) error {
 }
 
 func GetSegmentName(fileName string, i int) string {
-	return fileName + strconv.Itoa(i)
+	return fileName + config.SEG_EXT + strconv.Itoa(i)
 }
 
 func FileExits(parentDir string, fileName string, ifNotCreate bool) (int64, error) {
@@ -176,37 +177,30 @@ func FileExits(parentDir string, fileName string, ifNotCreate bool) (int64, erro
 		return fileInfo.Size(), nil
 	}
 	if os.IsNotExist(err) {
-		if ifNotCreate{
+		if ifNotCreate {
 			_, err := CreateFile(parentDir, fileName, 0)
 			if err != nil {
-				return 1, FileCreatePermissionError
+				return 0, FileCreatePermissionError
 			}
-			return 1, nil
-		}else {
-			return 1,nil
+			return 0, nil
+		} else {
+			return 0, nil
 		}
 	}
 	return 0, FileReadPermissionError
 }
 
-func GetStats(startTime *time.Time, writeDuration *time.Duration, bytesRead *int64, bytesWrote *int64, fileSize *int64, stat *pkg.DownloadStats) {
-
-	*stat.ElapsedTime = time.Since(*startTime)
-
-	*stat.DownloadSpeed = float64(*bytesRead) / (*stat.ElapsedTime).Seconds()
-
-	*stat.DiskWriteSpeed = float64(*bytesWrote) / float64(*writeDuration)
-
-	*stat.EstimateRemainingTime = time.Duration(float64(*fileSize-*bytesRead)/(*stat.DownloadSpeed)) * time.Second
-
-	*stat.Progress = float32(float64(*bytesRead) * (100 / float64(*fileSize)))
-
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-
-	*stat.MemoryUsed = m.Alloc
-
-	// return &pkg.DownloadStats{DownloadSpeed: &downloadSpeed, DiskWriteSpeed: &diskWriteSpeed, EstimateRemainingTime: &estimatedRemainingTime, ElapsedTime: &elapsed, Progress: &progress, MemoryUsed: &m.Alloc}
+func DeleteAndCreateNewFile(parentDir string, fileName string) error {
+	filePath := path.Join(parentDir, fileName)
+	err := os.Remove(filePath)
+	if err != nil {
+		return err
+	}
+	_, err = CreateFile(parentDir, fileName, 0)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func GetDownloadFolder(ext string) string {
@@ -239,4 +233,12 @@ func GetDownloadFolder(ext string) string {
 
 	return filepath.Join(config.DOWNLOAD_DIRECTORY, config.GENERAL_SUB_FOLDER)
 
+}
+
+func PrintToTerminal(reason string, segmentId int64, threadId uint8, isError bool) {
+	// if isError {
+	// 	fmt.Printf("Error: Segment id %d thread id %d - %s\n", segmentId, threadId, reason)
+	// } else {
+	// 	fmt.Printf("Info: Segment id %d thread id %d - %s\n", segmentId, threadId, reason)
+	// }
 }

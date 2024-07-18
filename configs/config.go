@@ -1,11 +1,17 @@
 package configs
 
-var DOWNLOAD_DIRECTORY = "/NAS/runa/NAS/Downloads"
-var TEMP_DIRECTORY = "/NAS/runa/NAS/Downloads"
+var DOWNLOAD_DIRECTORY = "/media/runa/NAS/Downloads"
+var TEMP_DIRECTORY = "/media/runa/NAS/Downloads/.temp"
+
+// var DOWNLOAD_DIRECTORY = "/downloads"
+// var TEMP_DIRECTORY = "/downloads/.temp"
 var TEMP_EXT = ".tmpDownload"
+var SEG_EXT = ".seg"
 var BUFF_SIZE = 1024 * 1024 // 1 MB
 var FILE_BUFF_SIZE = 1024 * 1024
 var DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X x.y; rv:10.0) Gecko/20100101 Firefox/10.0"
+var SEGMENT_SIZE int64 = 1024 * 1024 * 5
+var BANDWIDTH float64 = 1024 * 1024 * 50
 
 var VIDEO_SUB_FOLDER = "Video"
 var PROGRAMS_SUB_FOLDER = "Program"
@@ -65,7 +71,7 @@ var DocumentExtensions = []string{
 	".txt",
 	".csv",
 	".rtf",
-	".md", // Markdown
+	".md",
 }
 
 var MusicExtensions = []string{
@@ -78,5 +84,5 @@ var MusicExtensions = []string{
 	".wma",
 	".aiff",
 	".opus",
-	".mid", // MIDI
+	".mid",
 }
